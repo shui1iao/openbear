@@ -505,7 +505,7 @@ for (const phone of [true, false]) test(`${phone ? 'phone' : 'desktop'} bootstra
   const systemRow = () => x.s.displayRows.value.find(row => row.id === '__temporary');
   await x.s.toggleRow(systemRow()); view = await x.render();
   assert.deepEqual(runningMarkerIds(view), []);
-  assert.deepEqual(directoryDots(view, '__temporary').map(node => node.props.class), ['directory-waiting-dot','conversation-unread-dot']);
+  assert.deepEqual(directoryDots(view, '__temporary').map(node => node.props.class), ['directory-waiting-dot']);
   const systemNodes = walk([rows(view).find(row => row.props['data-tree-id'] === '__temporary')]);
   assert.equal(systemNodes.find(node => classes(node, 'node-count')).children, '2');
   await x.s.toggleRow(systemRow());
@@ -532,7 +532,7 @@ for (const phone of [true, false]) test(`${phone ? 'phone' : 'desktop'} director
   const x = harness(t, {phone, storedView: 'folders'});
   x.s.rootFolders.value = [{...folder('F'), name: 'same / name', pinned: true, conversationCount: 20}, {...folder('other'), name: 'same / name'}];
   x.s.expanded.value = new Set(); x.s.stateFor('F').items = []; x.s.stateFor('F').loaded = false;
-  const activities = [conversation('run', {folderId: 'deep', running: true, activityState: 'running'}),
+  const activities = [conversation('run', {folderId: 'deep', running: true, activityState: 'running', activityVersion: 3, activityResult: {status: 'error'}}),
     conversation('wait', {folderId: 'deep', running: true, activityState: 'waiting', activityVersion: 3,
       activityResult: {status: 'completed'}, activityPending: [{action: 'confirm'}, {action: 'select'}, {action: 'prompt'}, {action: 'questionnaire'}]}),
     conversation('generic-wait', {folderId: 'deep', running: true, activityState: 'waiting'}),
@@ -551,6 +551,9 @@ for (const phone of [true, false]) test(`${phone ? 'phone' : 'desktop'} director
   const summary = directoryGroup(view,'F').props.title;
   for (const label of ['待确认','待选择','待填写','待填写问卷','待处理','运行中','已完成','失败','已取消','已中断','部分完成','未读']) assert.ok(summary.includes(label), label);
   assert.match(summary, /失败 2/);
+  assert.match(summary, /未读 6 个会话/);
+  assert.match(summary, /已完成 1/);
+  assert.match(directoryGroup(view,'__temporary').props.title, /未读 1 个会话/);
   assert.equal(directoryDots(view,'other').length,0); assert.equal(directoryDots(view,'__archive').length,0);
   assert.equal(x.s.stateFor('F').loaded,false); assert.equal(x.s.stateFor('F').items.length,0);
   assert.equal(x.requests.filter(request=>request[0]==='folders').length,1);
@@ -570,7 +573,10 @@ for (const phone of [true,false]) test(`${phone ? 'phone' : 'desktop'} directory
   let view=await update([conversation('active',{folderId:'deep',running:true,activityState:'waiting',activityPending:[{action:'prompt'}]})]);
   assert.deepEqual(directoryDots(view,'F').map(node=>node.props.class),['directory-waiting-dot']);
   view=await update([resultRow('active','completed',{running:true,activityState:'running'})]);
+  assert.deepEqual(directoryDots(view,'F').map(node=>node.props.class),['running-leaf']);
+  view=await update([resultRow('active','completed',{running:true,activityState:'running'}),resultRow('other-finished','cancelled')]);
   assert.deepEqual(directoryDots(view,'F').map(node=>node.props.class),['running-leaf','conversation-unread-dot']);
+  assert.match(directoryGroup(view,'F').props.title,/未读 1 个会话（已取消 1）/);
   view=await update([resultRow('active','failed')]);
   assert.deepEqual(directoryDots(view,'F').map(node=>node.props.class),['conversation-unread-dot']);
   x.catalog.activityReadVersions=new Map([['unrelated',99],['active',2]]);await settle();
@@ -756,3 +762,46 @@ test('a failed metadata read backs off instead of retrying on every status and r
   assert.equal(x.requests.length,1);await advanceMetadataClock(x,clock,59999);assert.equal(x.requests.length,1);
   await advanceMetadataClock(x,clock,1);assert.equal(x.requests.length,2);assert.equal(directoryDots(await x.render(),'F').length,1);
 });
+
+
+for (const phone of [true, false]) for (const folderId of ['F', 'deep', '']) {
+  test(`${phone ? 'phone' : 'desktop'} ${folderId || 'temporary'} intermediate Agent results stay hidden until the root becomes terminal`, async t => {
+    const x = harness(t, {phone, storedView: 'folders'}), id = folderId ? 'F' : '__temporary';
+    x.s.expanded.value = new Set();
+    for (const branch of [x.s.stateFor('F'), x.s.stateFor('', 'temporary')]) {branch.items = []; branch.loaded = false; branch.pages = 0;}
+    const done = resultRow('other-terminal', 'failed', {folderId});
+    const publish = async (state, result, others = []) => {
+      const active = resultRow('root-active', result, {folderId, running: state !== 'terminal',
+        activityState: state === 'terminal' ? result : state, activityPending: state === 'waiting' ? [{action: 'confirm'}] : []});
+      x.catalog.treeStatus = statusPacket([active, ...others]); await settle(); return x.render();
+    };
+    let view = await publish('running', 'completed');
+    assert.deepEqual(directoryDots(view, id).map(node => node.props.class), ['running-leaf']);
+    assert.doesNotMatch(directoryGroup(view, id).props.title, /未读|已完成|失败/);
+    assert.equal(x.s.activityItems.value.find(row => row.conversationUuid === 'root-active').activityUnread, true);
+    view = await publish('waiting', 'error');
+    assert.deepEqual(directoryDots(view, id).map(node => node.props.class), ['directory-waiting-dot']);
+    assert.doesNotMatch(directoryGroup(view, id).props.title, /未读|已完成|失败|运行中/);
+    view = await publish('waiting', 'error', [done]);
+    assert.deepEqual(directoryDots(view, id).map(node => node.props.class), ['directory-waiting-dot', 'conversation-unread-dot']);
+    assert.match(directoryGroup(view, id).props.title, /未读 1 个会话（失败 1）/);
+    view = await publish('running', 'completed', [done]);
+    assert.deepEqual(directoryDots(view, id).map(node => node.props.class), ['running-leaf', 'conversation-unread-dot']);
+    assert.match(directoryGroup(view, id).props.title, /未读 1 个会话（失败 1）/);
+    view = await publish('terminal', 'completed', [done]);
+    assert.deepEqual(directoryDots(view, id).map(node => node.props.class), ['conversation-unread-dot']);
+    assert.match(directoryGroup(view, id).props.title, /未读 2 个会话/);
+    x.catalog.activityReadVersions = new Map([['unrelated', 99], ['root-active', 2]]); await settle();
+    assert.match(directoryGroup(await x.render(), id).props.title, /未读 2 个会话/);
+    x.catalog.activityReadVersions = new Map([['root-active', 3]]); await settle();
+    assert.match(directoryGroup(await x.render(), id).props.title, /未读 1 个会话（失败 1）/);
+    x.catalog.activityReadVersions = new Map([['root-active', 3], ['other-terminal', 3]]); await settle();
+    assert.equal(directoryDots(await x.render(), id).length, 0);
+    x.catalog.treeStatus = statusPacket([resultRow('root-active', 'partial', {folderId, activityVersion: 4})]); await settle();
+    assert.match(directoryGroup(await x.render(), id).props.title, /部分完成 1/);
+    x.catalog.activityReadVersions = new Map([['root-active', 4], ['other-terminal', 3]]); await settle();
+    assert.equal(directoryDots(await x.render(), id).length, 0);
+    assert.equal(x.s.expanded.value.size, 0); assert.equal(x.reads.length, 0);
+    assert.equal(x.s.stateFor('F').loaded, false); assert.equal(x.s.stateFor('', 'temporary').loaded, false);
+  });
+}

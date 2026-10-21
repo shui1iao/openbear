@@ -23,11 +23,11 @@ export function directoryActivitySummaries(items, folders) {
           add(summary.waiting, activityLabel({...item, activityPending: pending ? [pending] : []}));
         }
       } else if (item.running) { summary.running.count += 1; add(summary.running, activityLabel(item)); }
-      if (item.activityUnread) {
+      if (item.activityUnread && !item.running && state !== "waiting") {
         summary.unread.count += 1;
-        // An unread earlier result can coexist with a new running/waiting turn.
+        // Intermediate Agent results are not terminal conversation results.
         const result = item.activityResult?.status;
-        add(summary.unread, result ? activityLabel({activityState: result}) : item.running ? "未读" : activityLabel(item));
+        add(summary.unread, result ? activityLabel({activityState: result}) : activityLabel(item));
       }
     }
   }
