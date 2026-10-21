@@ -14,7 +14,7 @@ function between(text, start, end) {
   assert.ok(from >= 0 && to > from, `${start}..${end}`);
   return text.slice(from, to);
 }
-const actual = between(source, 'async function showProperties(row, initialTab = \'context\') {', 'async function loadAllFolders()')
+const actual = between(source, 'async function showProperties(row, initialTab = \'context\') {', 'function adoptFolderMetadata(')
   + '\n' + between(display, 'export function modelThinkingLevels(', 'export function thinkingLabel(').replaceAll('export function', 'function');
 const clone = value => JSON.parse(JSON.stringify(value));
 const ref = value => ({value});

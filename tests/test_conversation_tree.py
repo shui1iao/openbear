@@ -191,19 +191,22 @@ async def test_property_and_move_handlers_commit_membership_without_snapshot_rew
     assert str((await cur.fetchone())["system_snapshot"]) == f"old:{uuid}"
 
 
-async def test_running_leaf_and_every_ancestor_increment_then_clear_without_loading_branch(tree_harness):
+@pytest.mark.parametrize("folder_path", [("a",), ("a", "b", "c", "d")], ids=["direct", "multi-level"])
+async def test_running_leaf_and_every_ancestor_increment_then_clear_without_loading_branch(tree_harness, folder_path):
     h = tree_harness
-    await _folder(h, "a", "", "A")
-    await _folder(h, "b", "a", "B")
-    uuid, _chat = await _conversation(h, 1, "b")
-    archived_uuid, _archived_chat = await _conversation(h, 2, "b", archived=True)
+    for index, folder_id in enumerate(folder_path):
+        await _folder(h, folder_id, folder_path[index - 1] if index else "", folder_id.upper())
+    await _folder(h, "idle", "", "Idle")
+    await _conversation(h, 3, "idle")
+    uuid, _chat = await _conversation(h, 1, folder_path[-1])
+    archived_uuid, _archived_chat = await _conversation(h, 2, folder_path[-1], archived=True)
     await h.db.conn.commit()
 
     h._web_starting_turns[uuid] = {"turn-1"}
     h._web_starting_turns[archived_uuid] = {"turn-archived"}
     started = await h._tree_running_state(7)
     assert [item["conversationUuid"] for item in started["items"]] == [uuid]
-    assert started["folderRunningCounts"] == {"a": 1, "b": 1}
+    assert started["folderRunningCounts"] == {folder_id: 1 for folder_id in folder_path}
 
     h._web_starting_turns.clear()
     finished = await h._tree_running_state(7)

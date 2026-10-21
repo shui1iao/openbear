@@ -16,7 +16,8 @@ import "./conversationTreeProperties.css";
 import ConversationPromptDialog from "./ConversationPromptDialog.vue";
 import WebhookEditor from "./webhooks/WebhookEditor.vue";
 import ConversationOverview from "./ConversationOverview.vue";
-import {activityReadRequests, activityLabel, activityState} from "../conversationActivity.js";
+import {activityReadRequests, activityLabel, activityState, withActivityReadVersion} from "../conversationActivity.js";
+import {directoryActivitySummaries} from "./directoryActivity.js";
 import {useRecentConversationRows} from "./conversationRecentRows.js";
 import { treeItemId as rowId, treeItemParent, compareTreeItems, resolveTreeDrop } from "./conversationTreeInteractions.js";
 import { referenceCatalog, referenceItem, acceptActivityReadReceipt } from "../references/catalog.js";
@@ -52,6 +53,7 @@ defineExpose({
 });
 
 const activityItems = ref([]);
+const directoryRunningItems = ref([]);
 const recentItems = ref([]);
 const activityReadBusy = ref(false);
 function savedSidebarView() {
@@ -139,6 +141,22 @@ const moveFolderQuery = ref("");
 const moveUnarchive = ref(true);
 const moveUpdateSnapshots = ref(true);
 const allFolders = ref([]);
+let folderMetadataRevision = 0, folderMetadataLoaded = -1, folderMetadataRequest = null, folderCountsKey = "";
+const activityFolderPaths = new Map();
+const FOLDER_METADATA_INTERVAL_MS = 60000;
+const directoryMetadataMounted = ref(false);
+const directoryPageVisible = ref(typeof document === "undefined" || document.visibilityState !== "hidden");
+let folderMetadataTimer = null, folderMetadataUpdatedAt = 0, folderMetadataAttemptAt = 0;
+let folderMetadataFailedRevision = -1, folderMetadataDisposed = false;
+const directoryStatusItems = computed(() => [...new Map([...directoryRunningItems.value, ...activityItems.value]
+  .map(item => [item.conversationUuid, item])).values()]);
+const directorySummaries = computed(() => directoryActivitySummaries(directoryStatusItems.value,
+  [...everyKnownNode().filter(row => row.kind === "folder"), ...allFolders.value]));
+function directoryActivity(row) {
+  if (row.kind !== "folder" && row.systemNode !== "temporary") return null;
+  const id = row.kind === "folder" ? row.folderId : row.id;
+  return isExpanded(id) ? null : directorySummaries.value.get(id) || null;
+}
 const impactDialog = ref(false);
 const impactState = reactive({ action: "移动", impact: null, resolve: null });
 let bootstrapGeneration = 0;
@@ -247,7 +265,8 @@ function appendFolderRows(output, folders, depth) {
 const visibleRows = computed(() => {
   const output = [];
   appendFolderRows(output, rootFolders.value, 0);
-  const temporary = { kind: "system", systemNode: "temporary", id: "__temporary", name: "临时会话", count: temporaryCount.value, depth: 0 };
+  const temporary = { kind: "system", systemNode: "temporary", id: "__temporary", name: "临时会话", count: temporaryCount.value,
+    runningDescendantCount: activityItems.value.filter(item => !item.folderId && running(item)).length, depth: 0 };
   output.push(temporary);
   if (isExpanded("__temporary")) {
     const branch = stateFor("", "temporary");
@@ -342,6 +361,7 @@ function forgetConversation(conversationUuid) {
   }
   searchRows.value = searchRows.value.filter((row) => row.conversationUuid !== conversationUuid);
   activityItems.value = activityItems.value.filter(row => row.conversationUuid !== conversationUuid);
+  directoryRunningItems.value = directoryRunningItems.value.filter(row => row.conversationUuid !== conversationUuid);
   recentItems.value = recentItems.value.filter(row => row.conversationUuid !== conversationUuid);
   emitRows();
 }
@@ -436,6 +456,10 @@ function adoptStatusConversation(raw) {
   for (const key of ["title", "folderId", "parentId", "path", "pinned", "pinnedAt", "displayOrder", "archived", "archivedAt"]) {
     if (Object.hasOwn(raw, key)) organization[key] = raw[key];
   }
+  for (const rows of [activityItems, directoryRunningItems]) {
+    rows.value = rows.value.map(item => item.conversationUuid === uuid ? {...item, ...organization} : item)
+      .filter(item => !item.archived);
+  }
   for (const map of [latestStatusState.lookup, latestStatusState.activityLookup]) {
     if (map.has(uuid)) map.set(uuid, { ...map.get(uuid), ...organization });
   }
@@ -456,7 +480,7 @@ function applyMutationRow(original, raw) {
         path: String(original.path || (raw.folderId ? folderPath(raw.folderId) : "临时会话")) };
   if (original.kind === "conversation") adoptStatusConversation(patch);
   mapKnownRows(item => rowId(item) === id ? statusAdjustedRow({ ...item, ...patch }) : item);
-  if (original.kind === "folder") rebaseKnownPaths(oldPath, String(raw.path || oldPath));
+  if (original.kind === "folder") { adoptFolderMetadata([patch]); rebaseKnownPaths(oldPath, String(raw.path || oldPath)); }
   emitRows();
 }
 function removeKnownTreeItem(row) {
@@ -504,6 +528,7 @@ function adjustRunningFolderCounts(ids, delta) {
   }
 }
 function applyMoveOrganization(original, targetFolderId, organization = {}) {
+  statusRequestGeneration += 1;
   const oldPath = String(original.path || "");
   const folderRows = organization.folderItems || [];
   const oldFolderIds = knownFolderIdPath(original.folderId);
@@ -518,9 +543,20 @@ function applyMoveOrganization(original, targetFolderId, organization = {}) {
   adoptOrganizationCounts(folderRows);
   mergeLocatedFolders(folderRows);
   const moved = organization.item;
+  adoptFolderMetadata([...folderRows, ...(moved?.kind === "folder" ? [moved] : [])]);
   if (moved?.kind === "folder") mergeLocatedFolders([moved]);
   else if (moved?.conversationUuid) {
     adoptStatusConversation(moved);
+    if (original.archived && !moved.archived) {
+      const restored = withActivityReadVersion(moved, referenceCatalog.activityReadVersions?.get(moved.conversationUuid));
+      if (restored.activityUnread) {
+        activityItems.value = [...activityItems.value.filter(item => item.conversationUuid !== restored.conversationUuid), restored];
+        if (latestStatusState) {
+          latestStatusState.activityLookup.set(restored.conversationUuid, restored);
+          latestStatusState.raw.activityItems = [...activityItems.value];
+        }
+      }
+    }
     cacheLocatedConversation(moved);
   }
   if (original.kind === "folder" && moved) rebaseKnownPaths(oldPath, String(moved.path || oldPath));
@@ -680,6 +716,7 @@ async function refreshTree({
     // A successfully returned bootstrap becomes the newest status calibration and
     // invalidates any poll that began against an older tree snapshot.
     statusRequestGeneration += 1;
+    folderMetadataRevision += 1;
     applyStatus(referenceCatalog.connected && referenceCatalog.treeStatus ? referenceCatalog.treeStatus : (data.running || {}));
 
     const selectedItem = trackActive ? data.selected?.item : null;
@@ -746,6 +783,25 @@ function applyStatus(data = {}) {
     return {...item, activityReadVersion: read, activityUnread: Number(item.activityVersion || 0) > read};
   };
   activityItems.value = (data.activityItems || data.items || []).map(adjust).filter(item => !item.archived && (item.running || item.activityUnread));
+  directoryRunningItems.value = (data.items || []).map(adjust).filter(item => !item.archived);
+  // Counts cover every folder, including unloaded/empty ones. Structural changes
+  // invalidate metadata; message, runtime and read-version updates reuse it.
+  if (data.folderConversationCounts) {
+    const key = JSON.stringify(Object.entries(data.folderConversationCounts).sort(([a], [b]) => a.localeCompare(b)));
+    if (key !== folderCountsKey) { folderCountsKey = key; folderMetadataRevision += 1; }
+  }
+  // Display paths only invalidate the metadata cache; they never determine
+  // ancestors. This also catches coalesced moves whose subtree totals match.
+  const paths = new Map(allFolders.value.map(folder => [folder.folderId, folder.path]));
+  for (const [id, path] of activityFolderPaths) paths.set(id, path);
+  let pathsChanged = false;
+  for (const item of directoryStatusItems.value) {
+    if (!item.folderId || !item.path) continue;
+    if (paths.has(item.folderId) && paths.get(item.folderId) !== item.path) pathsChanged = true;
+    activityFolderPaths.set(item.folderId, item.path);
+  }
+  if (pathsChanged) folderMetadataRevision += 1;
+  scheduleDirectoryMetadata();
   // Recency is independent of completion/read state; server supplies the newest
   // fifteen actual interactions, including rows absent from the loaded tree pages.
   recentItems.value = (data.recentItems || []).map(adjust).filter(item => !item.archived && !item.local).slice(0, 15);
@@ -1320,10 +1376,58 @@ async function saveProperties() {
   finally { if (save === propertiesSaveGeneration) propertiesSaving.value = false; }
 }
 
-async function loadAllFolders() {
-  const data = await Api.conversationTreeFolders();
-  allFolders.value = Array.isArray(data.items) ? data.items : [];
+function adoptFolderMetadata(rows) {
+  const updates = rows.filter(row => row?.folderId && row.kind === "folder");
+  if (!updates.length) return;
+  const current = folderMetadataLoaded === folderMetadataRevision;
+  folderMetadataRevision += 1;
+  const byId = new Map(allFolders.value.map(row => [row.folderId, row]));
+  for (const row of updates) byId.set(row.folderId, {...byId.get(row.folderId), ...row});
+  allFolders.value = [...byId.values()];
+  if (current) folderMetadataLoaded = folderMetadataRevision;
 }
+async function loadAllFolders(force = true, automatic = false) {
+  if (folderMetadataDisposed || (automatic && !needsDirectoryMetadata())) return;
+  if (force) folderMetadataRevision += 1;
+  if (folderMetadataLoaded === folderMetadataRevision) return;
+  if (!folderMetadataRequest) {
+    const revision = folderMetadataRevision, startedAt = Date.now();
+    folderMetadataAttemptAt = startedAt;
+    folderMetadataRequest = (async () => {
+      const data = await Api.conversationTreeFolders();
+      if (revision === folderMetadataRevision && !folderMetadataDisposed) {
+        allFolders.value = Array.isArray(data.items) ? data.items : [];
+        folderMetadataLoaded = revision;
+        folderMetadataUpdatedAt = startedAt;
+        folderMetadataFailedRevision = -1;
+      }
+    })().catch(error => { folderMetadataFailedRevision = revision; throw error; })
+      .finally(() => { folderMetadataRequest = null; scheduleDirectoryMetadata(); });
+  }
+  await folderMetadataRequest;
+  if (folderMetadataLoaded !== folderMetadataRevision && !folderMetadataDisposed && (!automatic || needsDirectoryMetadata())) await loadAllFolders(false, automatic);
+}
+function needsDirectoryMetadata() {
+  return directoryMetadataMounted.value && directoryPageVisible.value && isDirectoryView.value
+    && directoryStatusItems.value.some(item => item.folderId);
+}
+function scheduleDirectoryMetadata() {
+  if (folderMetadataTimer !== null) clearTimeout(folderMetadataTimer);
+  folderMetadataTimer = null;
+  if (!needsDirectoryMetadata() || folderMetadataRequest) return;
+  const now = Date.now(), dirty = folderMetadataLoaded !== folderMetadataRevision;
+  const retryDelay = folderMetadataFailedRevision === folderMetadataRevision
+    ? Math.max(0, folderMetadataAttemptAt + FOLDER_METADATA_INTERVAL_MS - now) : 0;
+  if ((dirty || now - folderMetadataUpdatedAt >= FOLDER_METADATA_INTERVAL_MS) && !retryDelay) {
+    void loadAllFolders(!dirty, true).catch(() => {});
+    return;
+  }
+  // One visible-directory timer only. Known structural changes refresh sooner;
+  // this low-frequency read catches same-name swaps with no realtime signal.
+  folderMetadataTimer = setTimeout(scheduleDirectoryMetadata,
+    retryDelay || Math.max(0, folderMetadataUpdatedAt + FOLDER_METADATA_INTERVAL_MS - now));
+}
+function updateDirectoryVisibility() { directoryPageVisible.value = document.visibilityState !== "hidden"; }
 function folderAncestorIds(folderId) {
   const byId = new Map(allFolders.value.map((folder) => [folder.folderId, folder]));
   const path = [], seen = new Set();
@@ -1559,7 +1663,12 @@ watch(() => [...displayRows.value, ...activityItems.value, ...recentItems.value]
 watch(() => referenceCatalog.treeStatus, data => { if (data) { statusRequestGeneration += 1; applyStatus(data); } });
 watch(() => referenceCatalog.activityReadVersions, () => { if (latestStatusState) applyStatus(latestStatusState.raw); });
 watch(() => [referenceCatalog.connected, referenceCatalog.ready], scheduleStatus);
+watch([() => directoryMetadataMounted.value, () => directoryPageVisible.value, () => isDirectoryView.value,
+  () => directoryStatusItems.value.some(item => item.folderId)], scheduleDirectoryMetadata);
 onMounted(async () => {
+  directoryMetadataMounted.value = true;
+  updateDirectoryVisibility();
+  document.addEventListener("visibilitychange", updateDirectoryVisibility);
   recentClockTimer = window.setInterval(() => { recentClock.value = Date.now(); }, 60000);
   window.addEventListener("keydown", globalKeydown);
   window.addEventListener("blur", closeOverview);
@@ -1567,6 +1676,11 @@ onMounted(async () => {
   scheduleStatus();
 });
 onBeforeUnmount(() => {
+  directoryMetadataMounted.value = false;
+  folderMetadataDisposed = true;
+  if (folderMetadataTimer !== null) clearTimeout(folderMetadataTimer);
+  folderMetadataTimer = null;
+  document.removeEventListener("visibilitychange", updateDirectoryVisibility);
   window.clearInterval(recentClockTimer);
   closeOverview();
   window.removeEventListener("blur", closeOverview);
@@ -1638,11 +1752,16 @@ onBeforeUnmount(() => {
             <button class="tree-chevron" type="button" :aria-label="isExpanded(row.kind === 'system' ? row.id : row.folderId) ? '折叠' : '展开'" @click.stop="toggleRow(row)">
               <el-icon><component :is="isExpanded(row.kind === 'system' ? row.id : row.folderId) ? ArrowDown : ArrowRight" /></el-icon>
             </button>
-            <button class="tree-node-main" type="button" :class="{ 'is-folder-target': (row.kind === 'folder' && selectedFolderId === row.folderId) || (row.kind === 'system' && row.systemNode === 'temporary' && selectedFolderId === '') }" :title="row.path || row.name" @click="row.search ? locateAndOpen(row) : activateRow(row)" @contextmenu="openMenu($event, row)">
+            <button class="tree-node-main" type="button" :class="{ 'is-folder-target': (row.kind === 'folder' && selectedFolderId === row.folderId) || (row.kind === 'system' && row.systemNode === 'temporary' && selectedFolderId === '') }" :title="directoryActivity(row) ? `${row.path || row.name} · ${directoryActivity(row).text}` : row.path || row.name" @click="row.search ? locateAndOpen(row) : activateRow(row)" @contextmenu="openMenu($event, row)">
               <el-icon class="node-icon" :class="{ 'is-spinning': rowLoading(row) }"><component :is="rowLoading(row) ? Loading : row.kind === 'system' ? (row.systemNode === 'archive' ? Box : ChatLineRound) : (isExpanded(row.folderId) ? FolderOpened : Folder)" /></el-icon>
               <span class="node-label">{{ row.name }}</span>
               <span v-if="row.managedBy === 'recommendations'" class="node-managed" title="由推荐功能管理" aria-label="由推荐功能管理"><el-icon><MagicStick /></el-icon></span>
               <span v-if="row.pinned" class="node-star" title="同级置顶"><el-icon><StarFilled /></el-icon></span>
+              <span v-if="directoryActivity(row)" class="directory-activity" role="group" :aria-label="directoryActivity(row).text" :title="directoryActivity(row).text">
+                <span v-if="directoryActivity(row).waiting.count" class="directory-waiting-dot" role="img" :aria-label="directoryActivity(row).waiting.text" :title="directoryActivity(row).waiting.text"></span>
+                <span v-if="directoryActivity(row).running.count" class="running-leaf" role="img" :aria-label="directoryActivity(row).running.text" :title="directoryActivity(row).running.text"></span>
+                <span v-if="directoryActivity(row).unread.count" class="conversation-unread-dot" role="img" :aria-label="directoryActivity(row).unread.text" :title="directoryActivity(row).unread.text"></span>
+              </span>
               <span class="node-count" :aria-label="`${row.kind === 'system' ? row.count : Number(row.conversationCount || 0)} 个会话`">{{ row.kind === 'system' ? row.count : Number(row.conversationCount || 0) }}</span>
             </button>
           </template>
@@ -1856,6 +1975,8 @@ onBeforeUnmount(() => {
 
 .running-leaf { width:6px; height:6px; flex:0 0 6px; margin-right:2px; border-radius:50%; background:var(--ob-blue); box-shadow:0 0 0 3px rgb(var(--ob-blue-rgb) / .12); animation:tree-pulse 1.8s ease-in-out infinite; }
 
+.directory-activity { display:inline-flex; align-items:center; gap:4px; flex:none; }
+.directory-waiting-dot { width:6px; height:6px; flex:0 0 6px; margin-right:2px; border-radius:50%; background:var(--ob-warning); }
 .conversation-unread-dot { width:6px; height:6px; flex:0 0 6px; margin-right:2px; border-radius:50%; background:var(--ob-blue); }
 .tree-leaf-spacer { width:24px; flex:0 0 auto; }
 .tree-inline-action,.search-more { margin-left:28px; border:0; background:transparent; color:var(--ob-blue); font-size:11px; cursor:pointer; }

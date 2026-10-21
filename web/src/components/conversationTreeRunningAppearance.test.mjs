@@ -17,7 +17,7 @@ async function rowHtml(row) {
   return renderToString(Vue.createSSRApp({render, components: {ElIcon: icon, InfoFilled: icon, StarFilled: icon, AnimatedConversationTitle: animated},
     setup: () => ({row, activeConversationRow: row.conversationUuid === 'active' ? row : null, selectedFolderId: 'project',
       running: row => Boolean(row.running || row.status === 'running'), rowLoading: () => false, isTitleGenerating: () => false, isExpanded: () => true,
-      liveConversationTitle: row => row.title || '新会话',
+      directoryActivity: () => null, liveConversationTitle: row => row.title || '新会话',
       activityLabel, activateRow() {}, openMenu() {}, locateAndOpen() {},
       ChatLineRound: 'chat-icon', Loading: 'loading-icon', Box: 'box-icon', FolderOpened: 'folder-icon', Folder: 'folder-icon'}),
   }));
@@ -41,7 +41,7 @@ test('completed unread row retains its unread dot without the running animation 
   assert.doesNotMatch(html, /running-leaf|is-working/);
 });
 
-test('configured folder keeps count and pin without running or property badges', async () => {
+test('expanded configured folder keeps count and pin without activity or property badges', async () => {
   const html = await rowHtml({kind: 'folder', folderId: 'project', name: 'Project', runningDescendantCount: 3,
     conversationCount: 10, pinned: true, hasLocalWorkspace: true, hasLocalPrompt: true});
   assert.doesNotMatch(html, /running-count|运行中/);
@@ -60,4 +60,12 @@ test('running dot is compact, blue in both themes and breathes without changing 
   assert.match(source, /prefers-reduced-motion: reduce\) \{ \.is-spinning,\.running-leaf \{ animation:none/);
   assert.doesNotMatch(source, /\.running-count|\.running-leaf i|\.running-leaf\.is-waiting/);
   assert.match(source, /\.node-icon\.is-working::before[^\n]*animation:tree-work-border-spin/);
+});
+
+
+test('directory waiting is a compact solid semantic yellow dot without changing leaf styling', () => {
+  const dot = source.match(/^\.directory-waiting-dot \{([^}]+)\}/m)[1];
+  assert.match(dot, /width:6px; height:6px; flex:0 0 6px/);
+  assert.match(dot, /background:var\(--ob-warning\)/);
+  assert.doesNotMatch(dot, /animation/);
 });
