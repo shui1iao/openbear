@@ -60,7 +60,7 @@ test("light and dark UI share the same transparent artwork", async () => {
       render: () => Vue.h("div", { class: theme }, [Vue.h(Logo)]),
     }));
     const src = html.match(/src="([^"]+)"/)[1];
-    assert.equal(src, "/assets/brand/openbear-8b4a77935326.png");
+    assert.equal(src, "/assets/brand/openbear-50652291024d.png");
     assertTransparentPng(asset(src), 512);
   }
 });

@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageChops
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("pwa_release_validation", ROOT / "scripts/release_validation.py")
@@ -52,10 +52,43 @@ def test_favicon_is_exact_transparent_logo_resize_without_the_old_circular_backd
     # In particular, PNG32 / ICO32 (16, 4) used to be (34, 42, 53, 255).
     for point in [(size // 2, size // 16), (size // 2, size // 8)]:
         assert frame.getpixel(point)[3] == 0, f"{format}{size} retains a backdrop at {point}"
-    with Image.open(ROOT / "web/public/assets/brand/openbear-original-4b3df3dfd523.png") as logo:
+    assert frame.getpixel((0, size - 1))[3] == 0, "the lower-left corner must stay rounded"
+    with Image.open(ROOT / "web/public/assets/brand/openbear-original-ecf8e441dc53.png") as logo:
         expected = logo.resize((size, size), Image.Resampling.LANCZOS)
     # Compare every pixel, so adding any circular mask, matte, padding or crop fails.
     assert frame.tobytes() == expected.tobytes()
+
+
+def test_rounded_master_only_removes_alpha_in_the_lower_left_corner():
+    with Image.open(ROOT / "web/public/assets/brand/openbear-original-4b3df3dfd523.png") as before:
+        with Image.open(ROOT / "web/public/assets/brand/openbear-original-ecf8e441dc53.png") as rounded:
+            assert rounded.size == before.size == (1024, 1024)
+            assert rounded.mode == before.mode == "RGBA"
+            assert ImageChops.difference(before.convert("RGB"), rounded.convert("RGB")).getbbox() is None
+            bounds = ImageChops.difference(before.getchannel("A"), rounded.getchannel("A")).getbbox()
+            assert bounds is not None
+            assert 0 <= bounds[0] < bounds[2] <= 225
+            assert 799 <= bounds[1] < bounds[3] <= 1024
+            assert ImageChops.subtract(rounded.getchannel("A"), before.getchannel("A")).getbbox() is None
+            assert before.getpixel((0, 1023))[3] == 255
+            assert rounded.getpixel((0, 1023))[3] == 0
+            assert rounded.getpixel((512, 128))[3] == 0, "the old circular backdrop must not return"
+
+
+@pytest.mark.parametrize("path,size", [
+    ("assets/brand/openbear-50652291024d.png", 512),
+    ("icons/openbear-192.png", 192),
+    ("icons/openbear-512.png", 512),
+    ("icons/apple-touch-icon.png", 180),
+])
+def test_logo_and_pwa_icons_are_exact_rounded_master_resizes(path, size):
+    with Image.open(ROOT / "web/public" / path) as image:
+        assert image.mode == "RGBA"
+        assert image.size == (size, size)
+        assert image.getpixel((0, size - 1))[3] == 0
+        assert image.getpixel((size // 2, size // 8))[3] == 0
+        with Image.open(ROOT / "web/public/assets/brand/openbear-original-ecf8e441dc53.png") as master:
+            assert image.tobytes() == master.resize((size, size), Image.Resampling.LANCZOS).tobytes()
 
 
 @pytest.fixture

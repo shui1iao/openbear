@@ -1,7 +1,7 @@
 <template>
   <img
     class="bear-logo"
-    src="/assets/brand/openbear-8b4a77935326.png"
+    src="/assets/brand/openbear-50652291024d.png"
     width="512"
     height="512"
     alt="OpenBear"
