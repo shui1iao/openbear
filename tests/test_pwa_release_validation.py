@@ -7,6 +7,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("pwa_release_validation", ROOT / "scripts/release_validation.py")
@@ -34,6 +35,27 @@ UNREFERENCED_FAVICONS = tuple(
     for path in sorted((ROOT / "web/public/assets/brand").glob("favicon-*"))
     if f"assets/brand/{path.name}" not in CURRENT_FAVICONS
 )
+
+
+@pytest.mark.parametrize("format,size", [("png", 32), ("ico", 16), ("ico", 32), ("ico", 48), ("ico", 64)])
+def test_favicon_is_exact_transparent_logo_resize_without_the_old_circular_backdrop(format, size):
+    path = ROOT / "web/public" / next(path for path in CURRENT_FAVICONS if path.endswith(f".{format}"))
+    with Image.open(path) as image:
+        if format == "ico":
+            assert image.ico.sizes() == {(16, 16), (32, 32), (48, 48), (64, 64)}
+            frame = image.ico.getimage((size, size)).copy()
+        else:
+            frame = image.copy()
+    assert frame.mode == "RGBA"
+    assert frame.size == (size, size)
+    # These points were inside the old dark circle, not its transparent corners.
+    # In particular, PNG32 / ICO32 (16, 4) used to be (34, 42, 53, 255).
+    for point in [(size // 2, size // 16), (size // 2, size // 8)]:
+        assert frame.getpixel(point)[3] == 0, f"{format}{size} retains a backdrop at {point}"
+    with Image.open(ROOT / "web/public/assets/brand/openbear-original-4b3df3dfd523.png") as logo:
+        expected = logo.resize((size, size), Image.Resampling.LANCZOS)
+    # Compare every pixel, so adding any circular mask, matte, padding or crop fails.
+    assert frame.tobytes() == expected.tobytes()
 
 
 @pytest.fixture

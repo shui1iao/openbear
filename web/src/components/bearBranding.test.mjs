@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
 import { parse } from "@vue/compiler-sfc";
 import { compile } from "@vue/compiler-dom";
@@ -86,14 +87,19 @@ test("PWA and Apple icons retain their sizes and existing application identity w
   assert.deepEqual(manifest.icons.map((icon) => icon.sizes).sort(), ["192x192", "512x512"]);
 });
 
-test("favicon links use versioned assets and provide real small-size ICO frames", () => {
+test("favicon links use content-fingerprinted assets with matching PNG and ICO artwork", () => {
   const html = readFileSync(new URL("index.html", webRoot), "utf8");
   const paths = [...html.matchAll(/<link\b[^>]*rel="icon"[^>]*href="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(paths.length, 2);
   const icoPath = paths.find((path) => path.endsWith(".ico"));
   const pngPath = paths.find((path) => path.endsWith(".png"));
   assert.match(icoPath, /^\/assets\/brand\/favicon-[a-f0-9]{12}\.ico$/);
-  assertPngSize(asset(pngPath), 32);
+  assert.match(pngPath, /^\/assets\/brand\/favicon-32-[a-f0-9]{12}\.png$/);
+  for (const path of paths) {
+    assert.ok(path.includes(createHash("sha256").update(asset(path)).digest("hex").slice(0, 12)));
+  }
+  const png = asset(pngPath);
+  assertTransparentPng(png, 32);
   const ico = asset(icoPath);
   assert.equal(ico.readUInt16LE(0), 0);
   assert.equal(ico.readUInt16LE(2), 1);
@@ -106,7 +112,9 @@ test("favicon links use versioned assets and provide real small-size ICO frames"
     const length = ico.readUInt32LE(entry + 8);
     const offset = ico.readUInt32LE(entry + 12);
     assert.ok(offset >= 6 + count * 16 && offset + length <= ico.length);
-    assertPngSize(ico.subarray(offset, offset + length), size);
+    const frame = ico.subarray(offset, offset + length);
+    assertTransparentPng(frame, size);
+    if (size === 32) assert.deepEqual(frame, png, "PNG32 and ICO32 contain identical PNG bytes");
     sizes.push(size);
   }
   assert.deepEqual(sizes, [16, 32, 48, 64]);
