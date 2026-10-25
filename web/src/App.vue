@@ -1873,7 +1873,6 @@ onBeforeUnmount(() => {
     border-radius: 8px;
     background: transparent;
     padding: 4px;
-    box-shadow: inset 0 0 0 1px var(--ob-border);
   }
 
   .app-main {

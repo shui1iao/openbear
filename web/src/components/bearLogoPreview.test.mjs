@@ -47,7 +47,7 @@ test("native button opens the original only on activation, with viewport-safe mo
   assert.equal(view.state.previewOpen.value, true);
   const viewer = find(view.tree(), (node) => node.type === Viewer);
   assert.ok(viewer);
-  assert.deepEqual(viewer.props["url-list"], ["/assets/brand/openbear-original-d60af5867ad8.png"]);
+  assert.deepEqual(viewer.props["url-list"], ["/assets/brand/openbear-original-4b3df3dfd523.png"]);
   assert.equal(viewer.props["close-on-press-escape"], true);
   assert.ok(Object.hasOwn(viewer.props, "hide-on-click-modal"));
   assert.ok(Object.hasOwn(viewer.props, "teleported"), "escape transformed or clipped mobile sidebar ancestors");
@@ -65,11 +65,12 @@ test("native button opens the original only on activation, with viewport-safe mo
   await view.state.closePreview();
 });
 
-test("preview uses the exact approved full-resolution artwork, not the reduced icon", () => {
-  const image = readFileSync(new URL("public/assets/brand/openbear-original-d60af5867ad8.png", root));
+test("preview uses the approved transparent full-resolution artwork, not the reduced icon", () => {
+  const image = readFileSync(new URL("public/assets/brand/openbear-original-4b3df3dfd523.png", root));
   assert.equal(image.readUInt32BE(16), 1024);
   assert.equal(image.readUInt32BE(20), 1024);
-  assert.equal(createHash("sha256").update(image).digest("hex"), "d60af5867ad8bb97adeb939d53db0c406c3aada611176ac426c675b2f37f675d");
+  assert.equal(image[25], 6, "the full-resolution artwork has an alpha channel");
+  assert.equal(createHash("sha256").update(image).digest("hex"), "4b3df3dfd523932939da89eb2c011194bc0e00004e9a40ff0d032733c9d6fff1");
 });
 
 test("only desktop/sidebar and mobile top-left brand entries opt into the preview", () => {

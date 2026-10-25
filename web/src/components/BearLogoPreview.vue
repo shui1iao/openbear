@@ -5,7 +5,7 @@ import BearLogo from "./BearLogo.vue";
 
 const previewOpen = ref(false);
 const trigger = ref(null);
-const originalImages = ["/assets/brand/openbear-original-d60af5867ad8.png"];
+const originalImages = ["/assets/brand/openbear-original-4b3df3dfd523.png"];
 
 function openPreview() {
   previewOpen.value = true;
