@@ -84,7 +84,7 @@ function harness({local = false, halfOpenFirst = false, createConversation} = {}
     draft: {value: "original message"}, pendingAttachments: {value: []}, attachmentPreviews: {value: {}},
     uploadProgressByConversation: {value: {}}, localDefaultsFolderId: local ? '' : null,
     messages: {value: []}, lastStats: {value: null}, foregroundRunning: {value: false}, rootTurnRunning: {value: false},
-    runStartedAt: {value: 0}, status: {value: "就绪"}, lastFrameSeq: {value: 10},
+    runStartedAt: {value: 0}, currentReplyRun: {value: null}, status: {value: "就绪"}, lastFrameSeq: {value: 10},
     autoScrollLocked: {value: true}, chatState: {value: {running: false}}, draftByConversation: {value: {}},
     activeConversationUuid: {get value() {return props.conversationUuid;}},
     isLocalConversation: {get value() {return props.conversationUuid.startsWith("local:");}},
@@ -96,7 +96,9 @@ function harness({local = false, halfOpenFirst = false, createConversation} = {}
     conversationWsUrl: (uuid) => `ws://test.invalid/${uuid}`,
     localAttachmentPayload: () => [], clearDraftForConversation: noop, adjustComposerHeight: noop, closeComposerMenus: noop,
     attachmentDrafts: createAttachmentDraftStorage({driver: attachmentDriver}),
-    noteVisibleOutput: noop, clearActiveRun: noop, lockAutoScroll: noop, scrollBottom: async () => {},
+    noteVisibleOutput: noop,
+    clearActiveRun: () => {context.currentReplyRun.value = {conversationUuid: context.activeConversationUuid.value, startedAt: 0};},
+    lockAutoScroll: noop, scrollBottom: async () => {},
     emit: (event, uuid) => {if (event === "conversation-created") props.conversationUuid = uuid;},
     nextTick: async () => {}, completeLocalRunConfig: () => ({}), ensureLocalRunDefaults: async () => {}, forgetLocalDraftChoices: noop, updatePromptSuggestions: noop,
     Api: {
@@ -182,6 +184,8 @@ for (const ackFirst of [true, false]) test(`first local send receives live outpu
   assert.equal(h.run('timelinePageConversationUuid'), 'conv-created');
   assert.equal(h.run('timelinePageInitialized'), true);
   assert.equal(c.localToServerTransitionUuid.value, '', 'a successful id migration consumes its marker before ACK');
+  assert.equal(c.currentReplyRun.value.conversationUuid, 'conv-created', 'the same optimistic reply follows its server id without leaking to other conversations');
+  assert.equal(c.currentReplyRun.value.startedAt, 0, 'pre-acceptance elapsed remains unknown');
   const sender = h.sockets.find(socket => socket.sent.some(item => item.type === 'send'));
   assert.notEqual(sender, timeline, 'ACK ownership stays separate from live output');
   const ack = () => sender.emit('message', JSON.stringify({type: 'ack', requestId: h.sends()[0].requestId}));

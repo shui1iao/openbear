@@ -227,6 +227,8 @@ const currentPrimaryModelKey = ref("");
 const thinkLevels = ref([]);
 const modelQuery = ref("");
 const runStartedAt = ref(0);
+// Display-only, server-rooted clock. Never inherit the header's local Date.now fallback.
+const currentReplyRun = ref(null);
 // Attachments belong to their conversation just like the text draft. File objects
 // cannot be written to localStorage next to it, so they are kept per conversation
 // in this map plus an IndexedDB record. The map holds the conversations the user
@@ -959,6 +961,7 @@ function resetTimelinePagination(conversationUuid = "") {
 }
 
 function resetOperationStore(conversationUuid = "") {
+	currentReplyRun.value = null;
 	conversationStateRequests.invalidate();
 	operationFrameBuffer.reset();
 	pendingLiveUpdates = [];
@@ -2208,6 +2211,7 @@ function projectOperationMessages(operations = orderedOperationsList()) {
 }
 
 function clearActiveRun() {
+	currentReplyRun.value = {conversationUuid: activeConversationUuid.value, startedAt: 0};
 	modelOutputProgress.value = null;
 	activeRunTurnUuid.value = "";
 	activeRunId.value = "";
@@ -2320,6 +2324,7 @@ function syncRunStateFromOperations(operations = orderedOperationsList(), stateF
 	runWaitingLabel.value = derived.waitingLabel || "";
 	activeRunTurnUuid.value = derived.activeRootTurnId || "";
 	activeRunId.value = derived.activeRunId || "";
+	currentReplyRun.value = {conversationUuid: activeConversationUuid.value, startedAt: derived.replyStartedAtMs};
 	runStartedAt.value = Number(derived.activeStartedAtMs || 0)
 		|| (stateForegroundRunning ? Number(stateFacts?.live?.startedAtMs || 0) : 0)
 		|| (stateBackgroundRunning ? Number(stateFacts?.backgroundStartedAtMs || 0) : 0)
@@ -4269,6 +4274,7 @@ async function switchConversation(next, prev) {
 		clearDraftForConversation(prev);
 		runConfigOverride.value = null;
 		chatState.value = {...(chatState.value || {}), conversationUuid: next};
+		if (currentReplyRun.value) currentReplyRun.value = {...currentReplyRun.value, conversationUuid: next};
 		agentAutoOpenBoundaryConversation = String(next || "");
 		// The new conversation has an empty timeline baseline. The send owns a
 		// separate ACK-only socket, so this id migration must also subscribe the
@@ -4616,6 +4622,7 @@ onBeforeUnmount(() => {
 				:agent-supports-thinking="agentSupportsThinking"
 				:agent-fast-supported="agentFastSupported"
 				:agent-default-thinking-label="agentDefaultThinkingLabel"
+				:current-reply-run="currentReplyRun?.conversationUuid === activeConversationUuid ? currentReplyRun : null"
 				:running="running"
 				:can-send="canSend"
 				:context-strategy="contextStrategy"

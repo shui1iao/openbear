@@ -217,6 +217,25 @@ function reducePayloadPatch(opType, oldPayload, payload) {
   return nextPayload;
 }
 
+function positiveReplyTime(value) {
+  const time = Number(value);
+  return Number.isFinite(time) && time > 0 ? time : 0;
+}
+
+// Frontend-only provenance for the composer clock. Unmarked HTTP snapshots have
+// server timestamps; reduced frames may have a synthetic legacy createdAtMs.
+// Keep both reliable sources so a later server createdAtMs can outrank payload.
+function replyTimeOrigin(operation = {}) {
+  const origin = operation?.replyTimeOrigin || {
+    createdAtMs: operation?.createdAtMs,
+    startedAtMs: operation?.payload?.startedAtMs,
+  };
+  return {
+    createdAtMs: positiveReplyTime(origin.createdAtMs),
+    startedAtMs: positiveReplyTime(origin.startedAtMs),
+  };
+}
+
 export function reduceOperationFrame(oldOperation, frame) {
   if (!frame || typeof frame !== "object" || !frame.opId) return oldOperation || null;
   const oldRevision = Number(oldOperation?.revision || 0) || 0;
@@ -225,6 +244,7 @@ export function reduceOperationFrame(oldOperation, frame) {
   const payload = frame.payload && typeof frame.payload === "object" ? frame.payload : {};
   const oldPayload = oldOperation?.payload && typeof oldOperation.payload === "object" ? oldOperation.payload : {};
   const nextPayload = reducePayloadPatch(String(frame.opType || oldOperation?.opType || ""), oldPayload, payload);
+  const previousReplyTime = (frame.opType || oldOperation?.opType) === "run" ? replyTimeOrigin(oldOperation) : null;
   const action = String(frame.action || "");
   const inferredTerminal = ["end", "error", "cancel", "stop"].includes(action) ? (action === "error" ? "failed" : action === "cancel" || action === "stop" ? "cancelled" : "completed") : "";
   const hasPayloadStatus = Object.prototype.hasOwnProperty.call(payload, "status") && payload.status !== null && payload.status !== undefined && payload.status !== "";
@@ -253,6 +273,10 @@ export function reduceOperationFrame(oldOperation, frame) {
     // update state in place and must never move a visible timeline row.
     displaySeq: Number(oldOperation?.displaySeq || frame.displaySeq || 0) || 0,
     createdAtMs: Number(oldOperation?.createdAtMs || frame.createdAtMs || Date.now()) || Date.now(),
+    ...(previousReplyTime ? {replyTimeOrigin: {
+      createdAtMs: previousReplyTime.createdAtMs || positiveReplyTime(frame.createdAtMs),
+      startedAtMs: previousReplyTime.startedAtMs || positiveReplyTime(payload.startedAtMs),
+    }} : {}),
     updatedAtMs: Number(frame.updatedAtMs || Date.now()) || Date.now(),
     terminalAtMs,
     revision,
@@ -447,6 +471,26 @@ function operationTaskUuid(op = {}) {
   return String(op?.taskUuid || payload.taskUuid || payload.task_uuid || task.taskUuid || task.task_uuid || "").trim();
 }
 
+// A phase/Agent timestamp is not the start of the reply. Resolve the original
+// root run even when it is terminal and only its Agents/supervision remain.
+function replyStartedAtMs(operations, anchor) {
+  if (!anchor) return 0;
+  const rootTurnId = String(anchor.runRootTurnId || anchor.run_root_turn_uuid || anchor.turnId || anchor.turnUuid || "");
+  const runId = String(anchor.runId || anchor.payload?.runId || "");
+  let startedAt = 0;
+  for (const op of operations) {
+    if (op.opType !== "run" || operationTaskUuid(op) || op.parentTurnId || op.internal || op.payload?.internal) continue;
+    const belongsToReply = rootTurnId
+      ? String(op.turnId || op.turnUuid || "") === rootTurnId
+      : Boolean(runId && String(op.runId || op.payload?.runId || "") === runId);
+    if (!belongsToReply) continue;
+    const origin = replyTimeOrigin(op);
+    const candidate = origin.createdAtMs || origin.startedAtMs;
+    if (Number.isFinite(candidate) && candidate > 0 && (!startedAt || candidate < startedAt)) startedAt = candidate;
+  }
+  return startedAt;
+}
+
 export function deriveOperationRunState(operations = []) {
   const ops = normalizeOperations(operations);
   const active = ops.filter((op) => {
@@ -489,6 +533,7 @@ export function deriveOperationRunState(operations = []) {
     waitingLabel: rootTurnRunning && activeSupervisor ? String(activeSupervisor.payload?.statusText || "") : "",
     activeTurnId: activeTurn?.turnId || activeTurn?.turnUuid || "",
     activeStartedAtMs: startedAt,
+    replyStartedAtMs: replyStartedAtMs(ops, activeRootRun || activeTools.at(-1) || activeSupervisor || activeAgent),
     activeOperationIds: active.map((op) => op.opId).filter(Boolean),
     activeAgentOperationIds: activeAgents.map((op) => op.opId).filter(Boolean),
   };

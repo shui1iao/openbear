@@ -127,6 +127,15 @@ export function fmtElapsedClockMs(ms) {
 	return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+// Keep the existing header clock unchanged; the composer clock includes hours.
+export function fmtReplyElapsedClockMs(ms) {
+	const value = Number(ms);
+	if (!Number.isFinite(value)) return "—";
+	const seconds = Math.floor(Math.max(0, value) / 1000);
+	if (seconds < 3600) return fmtElapsedClockMs(seconds * 1000);
+	return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 export function conversationPathText(path) {
 	const text = String(path || "").trim().replaceAll(" / ", "/");
 	return text ? (text.startsWith("/") ? text : `/${text}`) : "—";

@@ -1,6 +1,7 @@
 <script setup>
 import {computed, nextTick, onBeforeUnmount, onMounted, ref, watch} from "vue";
 import ReferenceEditor from "../../references/ReferenceEditor.vue";
+import {vElapsed} from "./elapsedDirective.js";
 import ReferencePlainText from "../../references/ReferencePlainText.vue";
 import InteractionMarkdown from "./InteractionMarkdown.vue";
 import GroupProposalCard from "./GroupProposalCard.vue";
@@ -82,6 +83,7 @@ const props = defineProps({
 	agentFastSupported: {type: Boolean, default: false},
 	agentDefaultThinkingLabel: {type: String, default: "模型默认"},
 	running: {type: Boolean, default: false},
+	currentReplyRun: {type: Object, default: null},
 	canSend: {type: Boolean, default: false},
 	modelQuery: {type: String, default: ""},
 	contextStrategy: {type: String, default: "sliding_window"},
@@ -137,6 +139,8 @@ watch(() => Boolean(String(props.draft || "").trim()), (typed) => {
 	if (typed) promptSuggestionsSuppressed.value = true;
 	else if (!composerFocused.value) promptSuggestionsSuppressed.value = false;
 });
+
+const showCurrentReplyRun = computed(() => props.running && Boolean(props.currentReplyRun));
 
 // Pending interactions and queued messages own the space above the editor.
 const showPromptSuggestions = computed(() => Boolean(
@@ -827,8 +831,9 @@ defineExpose({focus, adjustHeight, openFilePicker, focusInteraction, getReferenc
 </script>
 
 <template>
-	<footer ref="composerShell" class="composer-shell shrink-0 pb-3 pt-5">
+	<footer ref="composerShell" class="composer-shell shrink-0 pb-3 pt-5" :class="{'has-running-reply': showCurrentReplyRun}">
 		<div class="composer-content pointer-events-auto relative mx-auto">
+			<div class="composer-prelude">
 			<div v-if="props.pendingSteering.length" class="steering-queue-card">
 				<div class="steering-queue-title">
 					<Timer/>
@@ -1013,6 +1018,15 @@ defineExpose({focus, adjustHeight, openFilePicker, focusInteraction, getReferenc
 					</div>
 				</section>
 			</Transition>
+
+			</div>
+
+			<div v-if="showCurrentReplyRun" class="composer-reply-run" role="status">
+				<span>本条回复运行中</span><span aria-hidden="true">/</span>
+				<span>已用 <span :key="props.conversationUuid" class="composer-reply-clock" aria-live="off"
+					:title="props.currentReplyRun.startedAt ? '本条回复已用时间' : '本条回复起点未知'"
+					v-elapsed="{startAt: props.currentReplyRun.startedAt, active: true, format: 'reply-clock', fallback: '—'}">—</span></span>
+			</div>
 
 			<div class="composer-box">
 				<input ref="fileInput" type="file" multiple class="hidden" @change="onAttachmentChange"/>
@@ -1252,6 +1266,42 @@ defineExpose({focus, adjustHeight, openFilePicker, focusInteraction, getReferenc
 .composer-shell > div {
 	pointer-events: auto;
 }
+
+.composer-prelude { display: contents; }
+/* Long confirmations/queues scroll above the clock, never with the clock/editor.
+   Flex shrinking also reserves the input area when the mobile keyboard opens. */
+.composer-shell.has-running-reply {
+	display: flex;
+	flex-direction: column;
+	max-height: 100%;
+}
+.has-running-reply .composer-content {
+	display: flex;
+	flex-direction: column;
+	flex: 0 1 auto;
+	min-height: 0;
+}
+.has-running-reply .composer-content > :not(.composer-prelude) { flex-shrink: 0; }
+.has-running-reply .composer-prelude {
+	display: block;
+	flex: 0 1 auto;
+	min-height: 0;
+	max-height: min(40vh, 24rem);
+	max-height: min(calc(var(--mobile-viewport-height, 100dvh) * .4), 24rem);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+}
+.composer-reply-run {
+	display: flex;
+	align-items: center;
+	gap: .4rem;
+	padding: 0 .25rem .4rem;
+	color: var(--ob-text-muted);
+	font-size: 11px;
+	line-height: 1.4;
+}
+.composer-reply-clock { font-variant-numeric: tabular-nums; }
 
 .steering-queue-card {
 	display: grid;
